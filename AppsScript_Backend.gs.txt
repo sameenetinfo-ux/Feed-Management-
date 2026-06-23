@@ -1,0 +1,226 @@
+/**
+ * Oceanpick Feed Management — Google Sheets Backend
+ * Deploy: Extensions > Apps Script > paste this > Deploy > New deployment > Web app
+ *   Execute as: Me
+ *   Who has access: Anyone with the link
+ * Copy the deployment URL into APP_API_URL in the HTML app.
+ */
+
+const SHEETS = {
+  users: "Users",
+  requests: "Feed_Request",
+  transfers: "Feed_Transfer",
+  confirms: "Transfer_Confirm",
+  stock: "Feed_Stock"
+};
+
+function ss(){ return SpreadsheetApp.getActiveSpreadsheet(); }
+
+function sheetToObjects(sheetName){
+  const sh = ss().getSheetByName(sheetName);
+  if(!sh) return [];
+  const data = sh.getDataRange().getValues();
+  if(data.length < 2) return [];
+  const headers = data[0];
+  return data.slice(1).filter(row => row.some(c => c !== "")).map(row => {
+    const obj = {};
+    headers.forEach((h,i) => obj[h] = row[i]);
+    return obj;
+  });
+}
+
+function appendRow(sheetName, obj, headerOrder){
+  const sh = ss().getSheetByName(sheetName);
+  const headers = headerOrder || sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0];
+  const row = headers.map(h => obj[h] !== undefined ? obj[h] : "");
+  sh.appendRow(row);
+}
+
+function updateRowByKey(sheetName, keyCol, keyVal, updates){
+  const sh = ss().getSheetByName(sheetName);
+  const data = sh.getDataRange().getValues();
+  const headers = data[0];
+  const keyIdx = headers.indexOf(keyCol);
+  for(let r=1; r<data.length; r++){
+    if(data[r][keyIdx] === keyVal){
+      Object.keys(updates).forEach(col => {
+        const ci = headers.indexOf(col);
+        if(ci > -1) sh.getRange(r+1, ci+1).setValue(updates[col]);
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
+function findOrCreateStockRow(location, feedType, feedSize){
+  const sh = ss().getSheetByName(SHEETS.stock);
+  const data = sh.getDataRange().getValues();
+  const headers = data[0];
+  const locI = headers.indexOf("Location"), typeI = headers.indexOf("FeedType"),
+        sizeI = headers.indexOf("FeedSize"), qtyI = headers.indexOf("AvailableQty");
+  for(let r=1; r<data.length; r++){
+    if(data[r][locI]===location && data[r][typeI]===feedType && data[r][sizeI]===feedSize){
+      return {row: r+1, qty: data[r][qtyI]};
+    }
+  }
+  const newRow = headers.map(h => {
+    if(h==="StockID") return location+"-"+feedType+"-"+feedSize;
+    if(h==="Location") return location;
+    if(h==="FeedType") return feedType;
+    if(h==="FeedSize") return feedSize;
+    if(h==="AvailableQty") return 0;
+    if(h==="LastUpdated") return new Date();
+    if(h==="ReorderLevel") return 0;
+    return "";
+  });
+  sh.appendRow(newRow);
+  return {row: sh.getLastRow(), qty: 0};
+}
+
+function adjustStock(location, feedType, feedSize, delta){
+  const sh = ss().getSheetByName(SHEETS.stock);
+  const headers = sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0];
+  const qtyCol = headers.indexOf("AvailableQty") + 1;
+  const updCol = headers.indexOf("LastUpdated") + 1;
+  const found = findOrCreateStockRow(location, feedType, feedSize);
+  sh.getRange(found.row, qtyCol).setValue(Number(found.qty) + Number(delta));
+  if(updCol > 0) sh.getRange(found.row, updCol).setValue(new Date());
+}
+
+function nextSeq(prefix){
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try{
+    const props = PropertiesService.getScriptProperties();
+    const key = "seq_" + prefix;
+    let n = Number(props.getProperty(key) || "0") + 1;
+    props.setProperty(key, String(n));
+    return prefix + "-" + String(n).padStart(4, "0");
+  } finally {
+    try{ lock.releaseLock(); } catch(e){}
+  }
+}
+
+function doGet(e){
+  const action = e.parameter.action || "getAll";
+  let result = {};
+  if(action === "getAll"){
+    result = {
+      users: sheetToObjects(SHEETS.users),
+      requests: sheetToObjects(SHEETS.requests),
+      transfers: sheetToObjects(SHEETS.transfers),
+      confirms: sheetToObjects(SHEETS.confirms),
+      stock: sheetToObjects(SHEETS.stock)
+    };
+  }
+  return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e){
+  const body = JSON.parse(e.postData.contents);
+  const action = body.action;
+  let result = {ok: true};
+
+  try{
+    if(action === "createRequest"){
+      const id = nextSeq("REQ");
+      appendRow(SHEETS.requests, {
+        RequestID: id, RequestDate: new Date(), RequestedBy: body.email,
+        Location: body.location, "Cage/Batch": body.batch,
+        FeedType: body.feedType, FeedSize: body.feedSize, RequestQty: Number(body.qty),
+        RequiredDate: body.requiredDate, ApprovalLevel: "Manager",
+        Status: "Pending Manager"
+      });
+      result.id = id;
+    }
+
+    else if(action === "approveStep"){
+      const reqRows = sheetToObjects(SHEETS.requests);
+      const r = reqRows.find(x => x.RequestID === body.reqId);
+      const now = new Date();
+      if(body.role === "Manager" && r.Status === "Pending Manager"){
+        updateRowByKey(SHEETS.requests, "RequestID", body.reqId, {
+          ManagerApprovedBy: body.email, ManagerApprovedDate: now,
+          Status: "Pending Supervisor", ApprovalLevel: "Supervisor"
+        });
+      } else if(body.role === "Supervisor" && r.Status === "Pending Supervisor"){
+        updateRowByKey(SHEETS.requests, "RequestID", body.reqId, {
+          SupervisorApprovedBy: body.email, SupervisorApprovedDate: now,
+          Status: "Pending Store", ApprovalLevel: "Store"
+        });
+      } else if(body.role === "Store" && r.Status === "Pending Store"){
+        // mark request approved first
+        updateRowByKey(SHEETS.requests, "RequestID", body.reqId, {
+          StoreApprovedBy: body.email, StoreApprovedDate: now,
+          Status: "Approved", ApprovalLevel: "Done"
+        });
+        // create transfer record (do not overwrite request status to "Transfer Created" so DB shows Approved)
+        const trId = nextSeq("TR");
+        appendRow(SHEETS.transfers, {
+          TransferID: trId, RequestID: body.reqId, FromLocation: "Main Store",
+          ToLocation: r.Location, TransferDate: now, FeedType: r.FeedType,
+          FeedSize: r.FeedSize, Qty: r.RequestQty, DispatchBy: body.email,
+          ReceiveStatus: "In Transit"
+        });
+        result.transferId = trId;
+      }
+    }
+
+    else if(action === "rejectRequest"){
+      updateRowByKey(SHEETS.requests, "RequestID", body.reqId, {
+        Status: "Rejected", RejectionReason: body.reason || "No reason given"
+      });
+    }
+
+    else if(action === "setVehicle"){
+      updateRowByKey(SHEETS.transfers, "TransferID", body.trId, {"Vehicle/Boat": body.vehicle});
+    }
+
+    else if(action === "markDelivered"){
+      updateRowByKey(SHEETS.transfers, "TransferID", body.trId, {ReceiveStatus: "Confirm Pending"});
+    }
+
+    else if(action === "confirmTransfer"){
+      const transfers = sheetToObjects(SHEETS.transfers);
+      const t = transfers.find(x => x.TransferID === body.trId);
+      const id = nextSeq("CF");
+      const variance = Number(body.receivedQty) - Number(t.Qty);
+      appendRow(SHEETS.confirms, {
+        ConfirmID: id, TransferID: body.trId, ReceivedDate: new Date(),
+        ReceivedQty: Number(body.receivedQty), Variance: variance,
+        Remarks: body.remarks, ConfirmedBy: body.email
+      });
+      adjustStock(t.FromLocation, t.FeedType, t.FeedSize, -Number(t.Qty));
+      adjustStock(t.ToLocation, t.FeedType, t.FeedSize, Number(body.receivedQty));
+      updateRowByKey(SHEETS.transfers, "TransferID", body.trId, {ReceiveStatus: "Completed"});
+      const req = sheetToObjects(SHEETS.requests).find(r => r.RequestID === t.RequestID);
+      if(req) updateRowByKey(SHEETS.requests, "RequestID", t.RequestID, {Status: "Closed"});
+      result.confirmId = id;
+    }
+
+    else if(action === "addUser"){
+      appendRow(SHEETS.users, {
+        UserID: nextSeq("U"), FullName: body.name, Email: body.email2,
+        Role: body.role, Location: body.location, Status: "Active",
+        CreatedDate: new Date(), CreatedBy: body.email
+      });
+    }
+
+    else if(action === "toggleUserStatus"){
+      const users = sheetToObjects(SHEETS.users);
+      const u = users.find(x => x.Email === body.targetEmail);
+      updateRowByKey(SHEETS.users, "Email", body.targetEmail, {
+        Status: u.Status === "Active" ? "Suspended" : "Active"
+      });
+    }
+
+    else {
+      result = {ok: false, error: "Unknown action"};
+    }
+  } catch(err){
+    result = {ok: false, error: err.message};
+  }
+
+  return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+}

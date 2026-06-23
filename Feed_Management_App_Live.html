@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Oceanpick — Feed Management System (Live)</title>
+<style>
+  :root{
+    --ink:#1c2b27; --paper:#FAF8F3; --line:#DCD8CC;
+    --sage:#7A9A86; --sage-d:#43614F; --sage-l:#E7EFE9;
+    --honey:#D99B3F; --honey-d:#8A5A14; --honey-l:#FBEDD6;
+    --red:#A3402E; --red-l:#F6E4DF;
+    --muted:#6B6F6A;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:var(--paper);color:var(--ink);}
+  header{background:var(--sage-d);color:#fff;padding:14px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;}
+  header h1{margin:0;font-size:18px;font-weight:600;letter-spacing:.3px;}
+  header .sub{font-size:12px;opacity:.85;}
+  #userbar{display:flex;align-items:center;gap:10px;font-size:13px;}
+  #userbar select{padding:5px 8px;border-radius:6px;border:none;}
+  .badge{background:var(--honey);color:#3a2700;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:600;}
+  nav{display:flex;gap:4px;background:#fff;border-bottom:1px solid var(--line);padding:0 16px;overflow-x:auto;}
+  nav button{background:none;border:none;padding:12px 16px;cursor:pointer;font-size:13px;color:var(--muted);border-bottom:3px solid transparent;white-space:nowrap;}
+  nav button.active{color:var(--sage-d);border-color:var(--sage);font-weight:600;}
+  main{max-width:1100px;margin:0 auto;padding:20px 16px 60px;}
+  .grid{display:grid;gap:14px;}
+  .cards4{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
+  .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px;}
+  .stat{font-size:24px;font-weight:700;color:var(--sage-d);}
+  .stat-label{font-size:12px;color:var(--muted);margin-top:2px;}
+  h2{font-size:16px;margin:24px 0 10px;color:var(--sage-d);}
+  table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;}
+  th{background:var(--sage-l);color:var(--sage-d);font-weight:600;font-size:12px;}
+  tr:hover{background:#FCFBF7;}
+  .pill{padding:2px 9px;border-radius:10px;font-size:11px;font-weight:600;display:inline-block;}
+  .p-pending{background:var(--honey-l);color:var(--honey-d);}
+  .p-ok{background:var(--sage-l);color:var(--sage-d);}
+  .p-bad{background:var(--red-l);color:var(--red);}
+  button.act{background:var(--sage);color:#fff;border:none;padding:5px 11px;border-radius:6px;font-size:12px;cursor:pointer;margin-right:4px;}
+  button.act.rej{background:var(--red);}
+  button.act.alt{background:var(--honey);color:#3a2700;}
+  button.act:hover{opacity:.85;}
+  button.act:disabled{opacity:.5;cursor:wait;}
+  form.panel{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px;max-width:560px;}
+  form.panel label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;}
+  form.panel input,form.panel select,form.panel textarea{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:6px;font-size:13px;}
+  form.panel button{margin-top:16px;background:var(--sage-d);color:#fff;border:none;padding:9px 18px;border-radius:6px;cursor:pointer;font-size:13px;}
+  .empty{color:var(--muted);font-size:13px;padding:20px;text-align:center;}
+  .low{color:var(--red);font-weight:700;}
+  .toast{position:fixed;bottom:18px;right:18px;background:var(--sage-d);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .3s;z-index:99;}
+  .toast.show{opacity:1;}
+  .toast.error{background:var(--red);}
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  @media (max-width:600px){.twocol{grid-template-columns:1fr;}}
+  .muted{color:var(--muted);font-size:12px;}
+  #setupBanner{background:var(--honey-l);border:1px solid var(--honey);padding:12px 16px;border-radius:8px;margin:16px;font-size:13px;}
+  #setupBanner input{width:100%;padding:7px;margin-top:6px;border:1px solid var(--line);border-radius:6px;}
+</style>
+</head>
+<body>
+
+<div id="setupBanner" style="display:none;">
+  <strong>One-time setup</strong> — paste your Apps Script Web App URL below, then click Connect.
+  <input id="apiUrlInput" placeholder="https://script.google.com/macros/s/XXXXX/exec">
+  <button class="act" style="margin-top:8px;" onclick="connectApi()">Connect</button>
+</div>
+
+<header style="display:none;" id="appHeader">
+  <div>
+    <h1>🌊 Oceanpick Feed Management</h1>
+    <div class="sub" id="connSub">Connected to live Google Sheet</div>
+  </div>
+  <div id="userbar"></div>
+</header>
+
+<nav id="nav" style="display:none;"></nav>
+<main id="main"></main>
+<div class="toast" id="toast"></div>
+
+<script>
+let API_URL = localStorage.getItem("feedapp_api_url") || "";
+let DB = {users:[], requests:[], transfers:[], confirms:[], stock:[]};
+let currentUserEmail = "";
+let activeTab = "dashboard";
+let log = [];
+let autoRefreshIntervalId = null;
+let AUTO_REFRESH_MS = Number(localStorage.getItem('auto_refresh_ms') || 5000);
+let AUTO_REFRESH_ENABLED = localStorage.getItem('auto_refresh') === '1';
+let lastSync = null;
+
+const FEED_TYPES = ["Starter","Grower","Finisher","Medicated"];
+const FEED_SIZES = ["1mm","2mm","3mm","4mm","6mm","8mm"];
+
+function toast(msg, isError){
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast show" + (isError ? " error" : "");
+  setTimeout(()=>t.classList.remove("show"), 2500);
+}
+
+function init(){
+  if(!API_URL){
+    document.getElementById("setupBanner").style.display = "block";
+  } else {
+    connectApi(true);
+  }
+}
+
+async function connectApi(silent){
+  const input = document.getElementById("apiUrlInput");
+  if(input && input.value.trim()) API_URL = input.value.trim();
+  if(!API_URL){ toast("Paste your Apps Script URL first", true); return; }
+  localStorage.setItem("feedapp_api_url", API_URL);
+  try{
+    await refreshData();
+    document.getElementById("setupBanner").style.display = "none";
+    document.getElementById("appHeader").style.display = "flex";
+    document.getElementById("nav").style.display = "flex";
+    if(!silent) toast("Connected to your Google Sheet");
+    if(AUTO_REFRESH_ENABLED) startAutoRefresh();
+    render();
+  }catch(e){
+    toast("Could not connect — check the URL and that the deployment is set to 'Anyone with the link'", true);
+  }
+}
+
+async function refreshData(){
+  const res = await fetch(API_URL + "?action=getAll");
+  const data = await res.json();
+  DB = data;
+  if(!currentUserEmail && DB.users.length) currentUserEmail = DB.users[0].Email;
+  lastSync = new Date();
+  localStorage.setItem('last_sync', lastSync.toISOString());
+}
+
+async function callApi(action, payload){
+  const res = await fetch(API_URL, {
+    method: "POST",
+    headers: {"Content-Type": "text/plain;charset=utf-8"},
+    body: JSON.stringify(Object.assign({action, email: currentUserEmail}, payload))
+  });
+  const result = await res.json();
+  if(!result.ok && result.error) throw new Error(result.error);
+  return result;
+}
+
+function curUser(){ return DB.users.find(u=>u.Email===currentUserEmail); }
+function pillFor(status){
+  if(["Approved","Transfer Created","Completed","Closed","Delivered"].includes(status)) return "p-ok";
+  if(status==="Rejected") return "p-bad";
+  return "p-pending";
+}
+function canActOnRequest(r, user){
+  if(!user) return null;
+  if(user.Role==="Admin") return {role: r.ApprovalLevel};
+  if(r.Status==="Pending Manager" && user.Role==="Manager" && user.Location===r.Location) return {role:"Manager"};
+  if(r.Status==="Pending Supervisor" && user.Role==="Supervisor" && user.Location===r.Location) return {role:"Supervisor"};
+  if(r.Status==="Pending Store" && user.Role==="Store") return {role:"Store"};
+  return null;
+}
+
+async function withLoading(btn, fn){
+  if(btn) btn.disabled = true;
+  try{ await fn(); await refreshData(); render(); }
+  catch(e){ toast("Error: " + e.message, true); }
+  finally{ if(btn) btn.disabled = false; }
+}
+
+async function submitRequest(data){
+  await callApi("createRequest", data);
+  toast("Request submitted");
+}
+async function approveStep(reqId, role, btn){
+  let createdTransferId = null;
+  await withLoading(btn, async ()=>{
+    const res = await callApi("approveStep", {reqId, role});
+    createdTransferId = res && res.transferId ? res.transferId : null;
+    toast(reqId + " approved" + (createdTransferId ? (" — transfer: " + createdTransferId) : ""));
+  });
+  if(createdTransferId){ activeTab = "transfers"; render(); }
+}
+async function rejectRequest(reqId, btn){
+  const reason = prompt("Reason for rejection:");
+  if(reason===null) return;
+  await withLoading(btn, async ()=>{
+    await callApi("rejectRequest", {reqId, reason});
+    toast(reqId + " rejected");
+  });
+}
+async function setVehicle(trId, vehicle, btn){
+  await withLoading(btn, async ()=>{ await callApi("setVehicle", {trId, vehicle}); });
+}
+async function markDelivered(trId, btn){
+  await withLoading(btn, async ()=>{
+    await callApi("markDelivered", {trId});
+    toast(trId + " marked delivered");
+  });
+}
+async function confirmTransfer(trId, receivedQty, remarks, btn){
+  await withLoading(btn, async ()=>{
+    await callApi("confirmTransfer", {trId, receivedQty, remarks});
+    toast(trId + " confirmed — stock updated");
+    document.getElementById("confirmModal").innerHTML = "";
+  });
+}
+async function addUser(data, btn){
+  await withLoading(btn, async ()=>{
+    await callApi("addUser", data);
+    toast("User added");
+  });
+}
+async function toggleUserStatus(email, btn){
+  await withLoading(btn, async ()=>{ await callApi("toggleUserStatus", {targetEmail: email}); });
+}
+
+function render(){
+  renderHeader();
+  renderNav();
+  renderTab();
+}
+
+function renderHeader(){
+  const bar = document.getElementById("userbar");
+  const u = curUser();
+  const last = lastSync || (localStorage.getItem('last_sync') ? new Date(localStorage.getItem('last_sync')) : null);
+  bar.innerHTML = `
+    <span>Logged in as</span>
+    <select id="userSelect">
+      ${DB.users.map(x=>`<option value="${x.Email}" ${x.Email===currentUserEmail?"selected":""}>${x.FullName} (${x.Role})</option>`).join("")}
+    </select>
+    <span class="badge">${u ? u.Role : ""}</span>
+    <button class="act" onclick="refreshData().then(render)" title="Refresh from sheet">⟳</button>
+    <label style="margin-left:10px;font-size:12px;color:#fff;opacity:.9;display:flex;align-items:center;gap:6px;">
+      <input type="checkbox" id="liveToggle" ${AUTO_REFRESH_ENABLED?"checked":""} onchange="toggleAutoRefresh(this)" style="transform:scale(.9)"> Live
+    </label>
+    <input id="autoMs" type="number" min="1000" value="${AUTO_REFRESH_MS}" style="width:72px;padding:4px;border-radius:6px;border:none;margin-left:6px;font-size:12px;">ms
+    <div style="margin-left:10px;font-size:12px;color:#fff;opacity:.9;">Last: <span id="lastSync">${last?formatTime(last):'-'}</span></div>
+  `;
+  document.getElementById("userSelect").onchange = (e)=>{ currentUserEmail = e.target.value; activeTab="dashboard"; render(); };
+}
+
+function formatTime(d){
+  try{ const dt = new Date(d); return dt.toLocaleString(); } catch(e){ return String(d); }
+}
+
+function startAutoRefresh(){
+  stopAutoRefresh();
+  autoRefreshIntervalId = setInterval(async ()=>{
+    try{ await refreshData(); render(); }
+    catch(e){ console.warn('Auto-refresh error', e); }
+  }, AUTO_REFRESH_MS);
+}
+
+function stopAutoRefresh(){ if(autoRefreshIntervalId){ clearInterval(autoRefreshIntervalId); autoRefreshIntervalId = null; } }
+
+function toggleAutoRefresh(checkbox){
+  AUTO_REFRESH_ENABLED = checkbox.checked;
+  localStorage.setItem('auto_refresh', AUTO_REFRESH_ENABLED ? '1' : '0');
+  const inp = document.getElementById('autoMs');
+  const val = Number(inp.value) || 5000;
+  AUTO_REFRESH_MS = val; localStorage.setItem('auto_refresh_ms', String(AUTO_REFRESH_MS));
+  if(AUTO_REFRESH_ENABLED) startAutoRefresh(); else stopAutoRefresh();
+}
+
+function renderNav(){
+  const u = curUser();
+  const tabs = [
+    {id:"dashboard", label:"Dashboard"},
+    {id:"requests", label:"Requests"},
+    {id:"transfers", label:"Transfers"},
+    {id:"stock", label:"Stock"},
+    {id:"newrequest", label:"+ New Request"},
+  ];
+  if(u && u.Role==="Admin") tabs.push({id:"admin", label:"Admin"});
+  document.getElementById("nav").innerHTML = tabs.map(t=>`<button data-tab="${t.id}" class="${activeTab===t.id?'active':''}">${t.label}</button>`).join("");
+  document.querySelectorAll("nav button").forEach(b=>{ b.onclick = ()=>{ activeTab = b.dataset.tab; render(); }; });
+}
+
+function renderTab(){
+  const main = document.getElementById("main");
+  const u = curUser();
+  if(!u || u.Status!=="Active"){ main.innerHTML = `<div class="empty">This account is inactive. Contact your administrator.</div>`; return; }
+  if(activeTab==="dashboard") return renderDashboard(main, u);
+  if(activeTab==="requests") return renderRequests(main, u);
+  if(activeTab==="transfers") return renderTransfers(main, u);
+  if(activeTab==="stock") return renderStock(main, u);
+  if(activeTab==="newrequest") return renderNewRequest(main, u);
+  if(activeTab==="admin") return renderAdmin(main, u);
+}
+
+function renderDashboard(main, u){
+  const pendingMine = DB.requests.filter(r=>canActOnRequest(r,u) && !["Approved","Transfer Created","Closed","Rejected"].includes(r.Status)).length;
+  const totalPending = DB.requests.filter(r=>String(r.Status).startsWith("Pending")).length;
+  const inTransit = DB.transfers.filter(t=>t.ReceiveStatus==="In Transit").length;
+  const confirmPending = DB.transfers.filter(t=>t.ReceiveStatus==="Confirm Pending").length;
+  const lowStock = DB.stock.filter(s=>Number(s.AvailableQty) < Number(s.ReorderLevel||0)).length;
+  const closed = DB.requests.filter(r=>r.Status==="Closed").length;
+  main.innerHTML = `
+    <div class="grid cards4">
+      <div class="card"><div class="stat">${pendingMine}</div><div class="stat-label">Awaiting your approval</div></div>
+      <div class="card"><div class="stat">${totalPending}</div><div class="stat-label">Total pending requests</div></div>
+      <div class="card"><div class="stat">${inTransit}</div><div class="stat-label">Transfers in transit</div></div>
+      <div class="card"><div class="stat">${confirmPending}</div><div class="stat-label">Awaiting confirmation</div></div>
+      <div class="card"><div class="stat ${lowStock?'low':''}">${lowStock}</div><div class="stat-label">Low-stock locations</div></div>
+      <div class="card"><div class="stat">${closed}</div><div class="stat-label">Closed requests</div></div>
+    </div>
+    <p class="muted" style="margin-top:18px;">Data lives in your Google Sheet. Use the ⟳ button to pull the latest changes made by others.</p>
+  `;
+}
+
+function renderRequests(main, u){
+  const rows = DB.requests.slice().reverse().map(r=>{
+    const access = canActOnRequest(r, u);
+    let actions = "";
+    if(access && String(r.Status).startsWith("Pending")){
+      actions = `<button class="act" onclick="approveStep('${r.RequestID}','${access.role}', this)">Approve</button>
+                 <button class="act rej" onclick="rejectRequest('${r.RequestID}', this)">Reject</button>`;
+    }
+    return `<tr>
+      <td>${r.RequestID}</td><td>${r.Location}</td><td>${r["Cage/Batch"]}</td>
+      <td>${r.FeedType} ${r.FeedSize}</td><td>${r.RequestQty}</td>
+      <td><span class="pill ${pillFor(r.Status)}">${r.Status}</span></td>
+      <td>${actions || (r.Status==="Rejected" ? `<span class="muted">${r.RejectionReason||""}</span>` : "")}</td>
+    </tr>`;
+  }).join("");
+  main.innerHTML = `
+    <h2>Feed requests</h2>
+    <table><tr><th>ID</th><th>Location</th><th>Batch</th><th>Feed</th><th>Qty</th><th>Status</th><th>Action</th></tr>
+    ${rows || `<tr><td colspan="7" class="empty">No requests yet</td></tr>`}</table>
+  `;
+}
+
+function renderTransfers(main, u){
+  const rows = DB.transfers.slice().reverse().map(t=>{
+    let actions = "";
+    if(t.ReceiveStatus==="In Transit"){
+      actions = `<input type="text" placeholder="Vehicle/Boat" style="width:100px;padding:3px;font-size:12px;" id="veh-${t.TransferID}">
+        <button class="act alt" onclick="setVehicle('${t.TransferID}', document.getElementById('veh-${t.TransferID}').value, this)">Set</button>
+        <button class="act" onclick="markDelivered('${t.TransferID}', this)">Mark delivered</button>`;
+    } else if(t.ReceiveStatus==="Confirm Pending"){
+      actions = `<button class="act" onclick="openConfirm('${t.TransferID}')">Confirm receipt</button>`;
+    } else if(t.ReceiveStatus==="Completed"){
+      const cf = DB.confirms.find(c=>c.TransferID===t.TransferID);
+      actions = cf ? `<span class="muted">Recv: ${cf.ReceivedQty} (var ${cf.Variance>0?'+':''}${cf.Variance})</span>` : "";
+    }
+    return `<tr>
+      <td>${t.TransferID}</td><td>${t.RequestID}</td><td>${t.FromLocation} → ${t.ToLocation}</td>
+      <td>${t.FeedType} ${t.FeedSize}</td><td>${t.Qty}</td><td>${t["Vehicle/Boat"]||"-"}</td>
+      <td><span class="pill ${pillFor(t.ReceiveStatus)}">${t.ReceiveStatus}</span></td><td>${actions}</td>
+    </tr>`;
+  }).join("");
+  main.innerHTML = `
+    <h2>Feed transfers</h2>
+    <table><tr><th>ID</th><th>Request</th><th>Route</th><th>Feed</th><th>Qty</th><th>Vehicle</th><th>Status</th><th>Action</th></tr>
+    ${rows || `<tr><td colspan="8" class="empty">No transfers yet</td></tr>`}</table>
+    <div id="confirmModal"></div>
+  `;
+}
+
+function openConfirm(trId){
+  const t = DB.transfers.find(x=>x.TransferID===trId);
+  document.getElementById("confirmModal").innerHTML = `
+    <div class="card" style="margin-top:16px;max-width:420px;">
+      <strong>Confirm receipt — ${trId}</strong>
+      <div class="muted" style="margin:6px 0;">Planned qty: ${t.Qty} ${t.FeedType} ${t.FeedSize}</div>
+      <label class="muted">Received quantity</label>
+      <input type="number" id="recvQty" value="${t.Qty}" style="width:100%;padding:7px;border:1px solid var(--line);border-radius:6px;margin:4px 0 8px;">
+      <label class="muted">Remarks</label>
+      <textarea id="recvRemarks" style="width:100%;padding:7px;border:1px solid var(--line);border-radius:6px;"></textarea>
+      <div style="margin-top:10px;">
+        <button class="act" onclick="confirmTransfer('${trId}', document.getElementById('recvQty').value, document.getElementById('recvRemarks').value, this)">Save confirmation</button>
+      </div>
+    </div>`;
+}
+
+function renderStock(main, u){
+  const rows = DB.stock.map(s=>`
+    <tr><td>${s.Location}</td><td>${s.FeedType}</td><td>${s.FeedSize}</td>
+    <td class="${Number(s.AvailableQty)<Number(s.ReorderLevel||0)?'low':''}">${s.AvailableQty}</td>
+    <td>${s.ReorderLevel||0}</td>
+    <td><span class="pill ${Number(s.AvailableQty)<Number(s.ReorderLevel||0)?'p-bad':'p-ok'}">${Number(s.AvailableQty)<Number(s.ReorderLevel||0)?'LOW':'OK'}</span></td></tr>`).join("");
+  main.innerHTML = `<h2>Feed stock</h2>
+    <table><tr><th>Location</th><th>Feed type</th><th>Size</th><th>Available qty</th><th>Reorder level</th><th>Status</th></tr>${rows}</table>`;
+}
+
+function renderNewRequest(main, u){
+  main.innerHTML = `
+    <h2>New feed request</h2>
+    <form class="panel" id="reqForm">
+      <label>Location</label><input name="location" required value="${u.Role==='Requester'?u.Location:''}">
+      <label>Cage / Batch</label><input name="batch" required placeholder="e.g. Batch-A12">
+      <div class="twocol">
+        <div><label>Feed type</label><select name="feedType">${FEED_TYPES.map(f=>`<option>${f}</option>`).join("")}</select></div>
+        <div><label>Feed size</label><select name="feedSize">${FEED_SIZES.map(f=>`<option>${f}</option>`).join("")}</select></div>
+      </div>
+      <label>Requested quantity </label><input type="number" name="qty" required min="1">
+      <label>Unit </label><input name="unit" required>
+      <label>Required by date</label><input type="date" name="requiredDate" required>
+      <button type="submit">Submit request</button>
+    </form>`;
+  document.getElementById("reqForm").onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = e.target.querySelector("button");
+    const data = Object.fromEntries(new FormData(e.target));
+    await withLoading(btn, ()=>submitRequest(data));
+    activeTab = "requests"; render();
+  };
+}
+
+function renderAdmin(main, u){
+  const rows = DB.users.map(x=>`
+    <tr><td>${x.FullName}</td><td>${x.Email}</td><td>${x.Role}</td><td>${x.Location}</td>
+    <td><span class="pill ${x.Status==='Active'?'p-ok':'p-bad'}">${x.Status}</span></td>
+    <td><button class="act ${x.Status==='Active'?'rej':''}" onclick="toggleUserStatus('${x.Email}', this)">${x.Status==='Active'?'Suspend':'Reactivate'}</button></td></tr>`).join("");
+  main.innerHTML = `
+    <h2>User control</h2>
+    <table><tr><th>Name</th><th>Email</th><th>Role</th><th>Location</th><th>Status</th><th>Action</th></tr>${rows}</table>
+    <h2>Add user</h2>
+    <form class="panel" id="userForm">
+      <label>Full name</label><input name="name" required>
+      <label>Email</label><input name="email2" type="email" required>
+      <label>Role</label><select name="role">${["Admin","Requester","Manager","Supervisor","Store","Viewer"].map(r=>`<option>${r}</option>`).join("")}</select>
+      <label>Location</label><input name="location" required>
+      <button type="submit">Add user</button>
+    </form>`;
+  document.getElementById("userForm").onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = e.target.querySelector("button");
+    const data = Object.fromEntries(new FormData(e.target));
+    await withLoading(btn, ()=>addUser(data));
+  };
+}
+
+init();
+</script>
+</body>
+</html>
